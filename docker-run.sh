@@ -1,4 +1,3 @@
+# Here we will run the exploit script and print results
 
-# my attack
-
-python3 -c "print('attack')"
+python3 exploit.py

