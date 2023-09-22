@@ -1,3 +1,3 @@
 # Here we will run the exploit script and print results
 
-python3 exploit.py
+python3 /root/exploit.py
