@@ -82,17 +82,46 @@ Tasks:
 
 </details>
 
-## Report
+## Vulnerability Assessment Report
 
-### TASK 1 -- Information Leak
+### Overview
+
+In order to complete the above 4 tasks we are effectively asked to perform a vulnerability analysis and exploitation of the pico server project which is set up at the server domain we are given.  
+
+Effectively this means we need to go through source code analysis and dynamic execution of the binary in order to achieve exploitation of the remote executable.
+
+In order to achieve this we will need to specify our toolkit and protections active in the binary:
+
+- The binary's protections:  
+```gdb
+Canary                        : ✓ (value: 0xcafebabe)
+NX                            : ✓ 
+PIE                           : ✓ 
+Fortify                       : ✘ 
+RelRO                         : Full
+```
+
+- Tools:
+  - gdb (gef)
+  - objdump
+  - strace/ltrace
+  - 
+  - spidey sense
+
+
+++ Maybe just describe the overall functionality of the binary
+
+## TASK 1 -- Information Leak
 ------------------------------
 
 **TARGET**: Find the MD5 digest of the admin user's password.
 
-The MD5 of the password is fetched from the `./config/htpasswd` file in the server's runtime.  
-Specifically when a GET request on root is received by the server, the [check_auth()](./pico/main.c#99L) function is executed. The parameter of that function is the Base64 encoded username and password in the `<username>:<password>` format which is passed via the GET request's HTTP Basic Auth header: `Authorization: Basic`.
+- The MD5 of the password is fetched from the `./config/htpasswd` file in the server's runtime.  
+- Specifically when a GET request on root is received by the server, the [check_auth()](./pico/main.c#99L) function is executed.
+- The parameter of that function is the Base64 encoded username and password in the `<username>:<password>` format which is passed via the GET request's HTTP Basic Auth header: `Authorization: Basic`.
 
-We identify a format string vulnerability in the [check_auth()](./pico/main.c#99) function of `pico` server, where the code execution if the username provided in invalid (doesn't exist in the htpasswd file) a printf function is called without a format specifier, but with the `auth_username` variable directly. This allows us to input username strings that are format specifiers in C's printf().
+We identify a format string vulnerability in the [check_auth()](./pico/main.c#99) function of `pico` server, where the code execution of the username provided is invalid (doesn't exist in the htpasswd file) the `printf()` function is called **without a format specifier**, but with the `auth_username` variable directly.
+This allows us to input username strings that are format specifiers in C's `printf()`.
 
 ```c
   // check if user is found
@@ -108,36 +137,76 @@ We identify a format string vulnerability in the [check_auth()](./pico/main.c#99
   }
 ```
 
-++ Assembly
+- _(No assembly snippets are needed here since we have the actual source code and we can identify the vulnerability via code auditing)_.
 
-Here after we pass an invalid user in the base64 encoded Basic Auth string pair we get a message that informs us of the invalid username we gave. There we have a format string vulnerability in the `printf()`.  
-We can use that to leak information from the stack (!!!) or even write to arbitrary memory addresses.  
-Observing the pico server's runtime we figure out that the MD5 password value is on the 7th position in the stack when the vulnerable `printf()` is executed.  
-Formulate a base64 Auth string with `%7$s:hello` and perform a GET request at the root route of the server.
+- Here after we pass an invalid user in the base64 encoded Basic Auth string pair we get a message that informs us of the invalid username we gave.
+- There we have a format string vulnerability in the `printf()`.  
+- We can use that to leak information from the stack (!!!) or even write to arbitrary memory addresses.  
+- Observing the pico server's runtime we figure out that the MD5 password value is on the 7th position in the stack when the vulnerable `printf()` is executed.  
+- Formulate a base64 Auth string with `%7$s:hello` and perform a GET request at the root route of the server.
 
-We get back the MD5 hash of the password in the HTTP response.
+- We get back the MD5 hash of the password in the HTTP response.
 
 ```
 Flag #1
 MD5 HASH: ef281a07091268a0d779cf489d00380c
 ```
 
-### TASK 2 -- Password Decryption
+## TASK 2 -- Password Decryption
 ------------------------------
 
-There are 3 ways to get this flag:
+There are **3 ways** to get this flag:
 1. The intended one is a padding oracle attack on `AES-128 CBC`.
-2. The unintended is that the encryption key is stored in the `encryption_key` variable which is stored in the stack. We can use the above format string vuln to extract the key.
+2. The unintended is that the encryption key is stored in the `encryption_key` variable which is stored in the stack. We can use the format string vulnerability from Task 1 to extract the key.
 3. The third way and trivial way is after completing [Task 3](#task-3----local-file-read) we can read the key file from the local filesystem.
 
 ### 1. Intended
-1
-++ Padding oracle
+
+A padding oracle is identified in the `check_auth()` function of the pico server. There, when the credential check is being performed, after the check of whether the username exists (and if does indeed exist) then the password is checked whether it's correct. Since we provide the password already encrypted as an **AES-128 CBC mode cyphertext** the password get's decrypted via the `decrypt()` function.
+
+The logical bug that allows for the padding oracle lies exactly there, where if the padding is wrong then the server returns a 500 HTTP response code. While if the padding is okay but the password wrong then we get 401 code.
+
+So, we can go through every single byte of the ciphertext and use the response codes as our oracle (a crypto side-channel gotcha essentially), exfiltrating one bit of info on every request.
+
+The vulnerable code:
+```c
+  // since we run over http, the user should provide the password encrypted.
+  // we decrypt here.
+  char *auth_password = decrypt(encryption_key, auth_password_enc);
+  fprintf(stderr, "decrypted: %s\n", auth_password);
+  if (!auth_password) {
+    printf("HTTP/1.1 500 Internal Server Error\r\n");
+
+    free(auth_password);
+    return 0;
+  }
+
+  // check password's md5
+  char auth_password_md5[33];
+  md5_hex(auth_password, auth_password_md5);
+  free(auth_password);
+
+  if(strcmp(password_md5, auth_password_md5) != 0) {
+    printf("HTTP/1.1 401 Unauthorized\r\n");
+    printf("WWW-Authenticate: Basic realm=\"");
+    printf("Invalid password");
+    printf("\"\r\n\r\n");
+
+    free(auth_decoded);
+    return 0;
+  }
+
+  free(auth_decoded);
+  return 1; // both ok
+```
+
+More info on padding oracle cryptanalysis and the project used as a template to create the [cracking script](./pown/padding_oracles.py) can be found at the [padding oracle attack explained github repo](https://github.com/flast101/padding-oracle-attack-explained/).
+
 
 ### 2. Unintended
 
-As we can see at the main function of pico the `encryption_key` is fetched and stored in a local variable.
-`%60$s:hello` we find the location where the key is stored in the memory and leak it.
+As we can see at the main function of pico the `encryption_key` is fetched and stored in a local variable.  
+By supplying the payload `%60$s:hello` we find the location where the key is stored in the memory and leak it.
 
 Then we create a decryptor program in C that utilizes the `decrypt()` function where we pass as parameters the key we extracted and the initial encrypted admin password we were provided.
 
@@ -157,7 +226,7 @@ Sec-GPC: 1
 
 ```bash
 # and in curl
-(curl http://project-2.csec.chatzi.org:8000/ -H 'Authorization: Basic JTY0JHM6aGVsbG8=' -v)
+curl http://project-2.csec.chatzi.org:8000/ -H 'Authorization: Basic JTY0JHM6aGVsbG8=' -v
 ```
 
 ### 3. Trivial
@@ -170,35 +239,23 @@ ENCRYPTION KEY: c56b2fa8d1a21183a185f7c1e526a0b8
 PLAINTEXT PASSWORD: aCEDIsRateRe
 ```
 
-### TASK 3 -- Local File Read
+## TASK 3 -- Local File Read
 ------------------------------
+
+++ TODO: Content-length
+++ TODO: Canary and threads
+++ EBP and other dragons
 
 Here we need to go a level deeper in our binary analysis to achieve the task.  
 We start off by getting a sense of the protections of the binary.
-
 
 ### Context
 
 - The general idea:  
 The server hosted at the target address is the same pico server that we can compile locally. Since we know the execution environment of it we can deduce certain things for it's runtime.
 
-- The binary's protections:  
-```gdb
-Canary                        : ✓ (value: 0xcafebabe)
-NX                            : ✓ 
-PIE                           : ✓ 
-Fortify                       : ✘ 
-RelRO                         : Full
-```
 
 ### Analysis
-
-- Tools:
-  - gdb (gef)
-  - objdump
-  - strace/ltrace
-  - 
-  - spidey sense
 
 - The pico server is made in such a way as to handle HTTP POST and GET requests by fork()ing to different children that perform the actual handling. Since our case in point.
 
@@ -230,6 +287,11 @@ Flag #3:
 
 ### TASK 4 -- lspci aka Remote Command Execution
 ------------------------------
+**Target:** Remote Code Execution on the remote server
+
+2 RCE solutions:
+1. Glibc's `system()` function redirection
+2. ROPchain via glibc gadgets to execve single commands (like one word coammnds with no params)
 
 ```
 Flag #4:

