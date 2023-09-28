@@ -90,9 +90,11 @@ In order to complete the above 4 tasks we are effectively asked to perform a vul
 
 Effectively this means we need to go through source code analysis and dynamic execution of the binary in order to achieve exploitation of the remote executable.
 
+All stages of the above tasks can be found in the [Proof of Concept exploit script](./pown/exploit.py) tucked nicely in sections.
+
 In order to achieve this we will need to specify our toolkit and protections active in the binary:
 
-- The binary's protections:  
+### Binary Protections:  
 ```gdb
 Canary                        : ✓ (value: 0xcafebabe)
 NX                            : ✓ 
@@ -101,27 +103,40 @@ Fortify                       : ✘
 RelRO                         : Full
 ```
 
-- Tools:
-  - gdb (gef)
-  - objdump
-  - strace/ltrace
-  - 
-  - spidey sense
+
+1. **Canary**: A canary, also known as a stack protector, is a security mechanism used to detect buffer overflow attacks. It involves placing a random value (often called a canary) before the return address on the stack. If a buffer overflow occurs and the canary value is modified, an error will be triggered, indicating a possible attack. The canary value acts as a guard to protect the integrity of the stack. In the provided example, the canary value is 0xcafebabe.
+
+2. **NX (No-Execute)**: NX or DEP (Data Execution Prevention) is a hardware or software feature that prevents the execution of data in certain regions of memory. It helps prevent buffer overflow and code injection attacks by marking certain memory pages as non-executable. This means that even if an attacker manages to inject malicious code into memory, it cannot be executed. The NX protection is enabled in the given example.
+
+3. **PIE (Position Independent Executable)**: is a security feature that randomizes the base address of an executable at runtime. It prevents attackers from predicting the memory layout of the program, making it harder to exploit certain types of vulnerabilities, such as return-oriented programming (ROP) attacks. PIE ensures that the executable code, libraries, and data are loaded at different addresses each time the program is run. In the provided example, PIE protection is enabled.
+
+4. **Fortify**: is a set of security enhancements provided by the GNU C Library (glibc) to make C programs more resistant to common security vulnerabilities, such as buffer overflows, format string vulnerabilities, and integer overflows. It provides additional checks and protections to detect and prevent these vulnerabilities at runtime. In the given example, Fortify protection is not enabled (marked as "✘").
+
+5. **RelRO (Relocation Read-Only)**: is a memory protection mechanism that makes certain sections of an executable read-only after the dynamic linker has resolved all necessary relocations. It helps prevent certain types of attacks, such as overwriting function pointers or the Global Offset Table (GOT). The "Full" status indicates that all relevant sections have been made read-only. This provides stronger protection compared to partial RelRO.
 
 
-++ Maybe just describe the overall functionality of the binary
+### Toolkit
+
+Necessary for analysis and exploitation are the following:
+1. gdb (gef): for dynamic analysis of the server's behavior
+2. objdump: to get the offsets of addresses
+3. strace/ltrace: to observe the behavior of system calls and C library function calls during execution.
+4. ROPGadget: for the ROPchain present in Task 4 solution.
+
+### Context
+
+++
+
+
 
 ## TASK 1 -- Information Leak
-------------------------------
+
 
 **TARGET**: Find the MD5 digest of the admin user's password.
 
 - The MD5 of the password is fetched from the `./config/htpasswd` file in the server's runtime.  
 - Specifically when a GET request on root is received by the server, the [check_auth()](./pico/main.c#99L) function is executed.
 - The parameter of that function is the Base64 encoded username and password in the `<username>:<password>` format which is passed via the GET request's HTTP Basic Auth header: `Authorization: Basic`.
-
-We identify a format string vulnerability in the [check_auth()](./pico/main.c#99) function of `pico` server, where the code execution of the username provided is invalid (doesn't exist in the htpasswd file) the `printf()` function is called **without a format specifier**, but with the `auth_username` variable directly.
-This allows us to input username strings that are format specifiers in C's `printf()`.
 
 ```c
   // check if user is found
@@ -137,20 +152,25 @@ This allows us to input username strings that are format specifiers in C's `prin
   }
 ```
 
-- _(No assembly snippets are needed here since we have the actual source code and we can identify the vulnerability via code auditing)_.
+_(No assembly snippets are needed here since we have the actual source code and we can identify the vulnerability via code auditing)_.
 
-- Here after we pass an invalid user in the base64 encoded Basic Auth string pair we get a message that informs us of the invalid username we gave.
-- There we have a format string vulnerability in the `printf()`.  
+- We identify a format string vulnerability in the [check_auth()](./pico/main.c#99) function of `pico` server, where the code execution of the username provided when it is invalid (doesn't exist in the htpasswd file) the `printf()` function is called **without a format specifier**, but with the `auth_username` variable directly.
+- This allows us to input username strings that are format specifiers in C's `printf()`.
 - We can use that to leak information from the stack (!!!) or even write to arbitrary memory addresses.  
-- Observing the pico server's runtime we figure out that the MD5 password value is on the 7th position in the stack when the vulnerable `printf()` is executed.  
+- Observing the pico server's runtime we figure out that the MD5 password value is on the 7th position in the stack when the vulnerable `printf()` is executed.
 - Formulate a base64 Auth string with `%7$s:hello` and perform a GET request at the root route of the server.
-
 - We get back the MD5 hash of the password in the HTTP response.
+
+
 
 ```
 Flag #1
 MD5 HASH: ef281a07091268a0d779cf489d00380c
 ```
+
+### More on Format String Vulnerabilities and exploitation:
+- [Format Strings 101](https://axcheron.github.io/exploit-101-format-strings/)
+- [pwn.college::Format String Chapter](https://pwn.college/cse494-s2023/format-string-exploits)
 
 ## TASK 2 -- Password Decryption
 ------------------------------
@@ -208,7 +228,7 @@ More info on padding oracle cryptanalysis and the project used as a template to 
 As we can see at the main function of pico the `encryption_key` is fetched and stored in a local variable.  
 By supplying the payload `%60$s:hello` we find the location where the key is stored in the memory and leak it.
 
-Then we create a decryptor program in C that utilizes the `decrypt()` function where we pass as parameters the key we extracted and the initial encrypted admin password we were provided.
+Then we create a [decryptor program](./pico/encryption/decrypt.c) in C that utilizes the `decrypt()` function where we pass as parameters the key we extracted and the initial encrypted admin password we were provided.
 
 ```http
 GET / HTTP/1.1
@@ -241,57 +261,82 @@ PLAINTEXT PASSWORD: aCEDIsRateRe
 
 ## TASK 3 -- Local File Read
 ------------------------------
-
-++ TODO: Content-length
-++ TODO: Canary and threads
-++ EBP and other dragons
-
-Here we need to go a level deeper in our binary analysis to achieve the task.  
-We start off by getting a sense of the protections of the binary.
-
-### Context
-
-- The general idea:  
-The server hosted at the target address is the same pico server that we can compile locally. Since we know the execution environment of it we can deduce certain things for it's runtime.
-
+**Target**: ret2win, with the win function being the already existing gift of `send_file()` in pico's codebase.
 
 ### Analysis
 
-- The pico server is made in such a way as to handle HTTP POST and GET requests by fork()ing to different children that perform the actual handling. Since our case in point.
+- The pico server is made in such a way as to handle HTTP POST and GET requests by fork()ing to different children that perform the actual handling of the request. This is awesome because the context of execution of the parent gets copied over to the child, which means that if we compromise the libc base, canary or stack values of a child, they are the same for the parent server as well as all other children.
 
-We already have a format string vulnerability identified in the executable which we know how to trigger. This allows us to extract information for the context of execution of the binary. We can leak an incredible amount of stack values which in x86 are gonna be very useful since they encapsulate what has been pushed in the stack on runtime.
+Using our Info Leak vulnerability from [Task 1](#task-1----information-leak), we can leak an incredible amount of stack data which in x86 are gonna be very useful since they encapsulate what has been pushed in the stack on runtime.
 
-In order to capitalize on this we need to identify a second vulnerability which allows us to redirect the execution.
+Additionally, the developer of pico has been so kind to provide us with a win function to achieve our goal. That function is present in the codebase and is called `send_file()` and given a single argument which is the name and path of a file it returns its contents to us.
 
-### POST -- post_param
+In order to capitalize on the above we need to identify a second vulnerability which allows us to redirect the execution of the server.
+
+### Buffer Overflow on post_param()
 ------------------------------
 
-1. Content-length
-2. Bof
-3. canary, libc base, ebp, 
-We can perform a buffer overflow attack on 
+POST requests to the root of the server are handled via the [post_param](./pico/main.c#174) function. Here it's trivial to identify that the memory handling is erroneous since it can lead to a buffer overflow.
 
-In the pico servers code, we identify an HTTP POST route which `post_param()`
+First, the value of the `payload_size` variable can be tampered which results in a buffer much smaller than the payload, allowing us to overwrite data after the buffer in the stack. This allows us to rewrite the return address of the post_param() function and redirect execution.
+
+Secondly, the implementation of pico has a logical error while parsing HTTP headers, where for the `Content-Length` header takes the value provided a verbatim. Usually, this header is auto-filled by the client that performs the HTTP request (browser, curl, etc.) but can also be manually assigned by hand. HTTP servers are also prepared to cross-check the size of data and the `Content-Length` value and correct it. In this case though, if the header is present pico trusts it explicitly and assigns the value provided to the `payload_size` variable.
+
+So having the above in place we can perform a BOF attack against pico and redirect the execution via a POST request.
+
+### Attack Layout
+
+1. Leak necessary info from the stack
+2. Use the `post_param()` buffer overflow
+3. Redirect execution to the `send_file()` function
+
+### Payload and Exploitation
+
+canary, ebp, route-rel addr
+
+++
 
 ```
 Flag #3:
 [ascii art] + You guessed it... puppies!
 ```
 
-### Attack Layout
-
-- Leak necessary info from the stack
-- Use the post_data bof
-- Redirect execution to the send_file function
-- Handle runtime behaviour and load the filename as the function's argument
-
-### TASK 4 -- lspci aka Remote Command Execution
+## TASK 4 -- RCE
 ------------------------------
-**Target:** Remote Code Execution on the remote server
+**Target:** Remote Code Execution (RCE) on the remote server
 
-2 RCE solutions:
-1. Glibc's `system()` function redirection
-2. ROPchain via glibc gadgets to execve single commands (like one word coammnds with no params)
+2 ways to achieve RCE, both of which require knowledge of the Glibc version which the binary is using.
+
+We can identify that the Glibc version is 2.31 via sorcery and proceed with leaking a relative libc address via our Task 1 Info Leak from the stack. We can calculate the offset this libc address has from the libc base and then be able to calculate ad hoc any address we want in the libc of the binary.
+
+++ Illustration
+
+### 1. Glibc's `system()` function
+
+- http://phrack.org/issues/58/4.html
+
+The most trivial way would be to build upon our Task 3 execution redirection, but instead of `ret`ing to the `send_file()` function we could redirect execution to libc's `system()` function
+
+### 2. ROPchain via glibc gadgets to execve commands without parameters
+
+We can utilize the concept of Return Oriented Programming and create a chain of execution after the first jump from the overwritten return address of `post_param()` that imitates a system call in x86.
+
+Specifically, we would like to imitate the following assembly sequence:
+
+```as
+      /* execve(path='ebx', argv='ecx', envp='edx') */
+      mov ebx, edi
+      xor ecx, ecx     /* arguments */
+      xor edx, edx     /* NULL env */
+      /* call execve() */
+      push SYS_execve /* 0xb */
+      pop eax
+      int 0x80
+```
+
+To achieve the above concept we can reuse `pop-ret gadgets` present in the libc 2.31 and emulate the above behavior.
+
+++ feedback and resources
 
 ```
 Flag #4:
