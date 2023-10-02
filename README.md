@@ -125,9 +125,7 @@ Necessary for analysis and exploitation are the following:
 
 ### Context
 
-++
-
-
+++ (Overall behavior and protections and how to defeat them)
 
 ## TASK 1 -- Information Leak
 
@@ -294,7 +292,28 @@ So having the above in place we can perform a BOF attack against pico and redire
 
 canary, ebp, route-rel addr
 
-++
+After identifying the vulnerability now we can put everything together and craft a payload that exploits the binary. For testing, [the directions here were used](./pown/SETUP.md).
+
+|  'A'   |  Filename + 'B'  |  Buffer  |  'C'   |  Canary  |  EBP Original x3 |  send_file()  |  Junk  |  Buffer  |
+|:------:|:----------------:|:--------:|:------:|:--------:|:--------------:|:-------------:|:------:|:--------:|
+| 12 bytes | len(filename) + len('B') (40 bytes total)| 4 bytes | 4 bytes | 4 bytes | 3x4 bytes | 4 bytes | 4 bytes | 4 bytes |
+
+- The distance from the start of our saved buffer until overwriting the return address of the function (in the stack) is 76 bytes. On the way there certain things need to be setup.
+
+- Caveats:
+  1. We need to the filename we want to read, somewhere in our payload and point to it's address in the stack.
+  2. The canary value is needed to avoid stack smashing detection.
+  3. The original value of the `ebp` (base pointer) register is needed to be used for the execution to proceed properly.
+  4. The address of our buffer goes 2 stack frames after the overwritten value of the return address (arguments in x86).
+
+Having the above in mind, our payload takes the above format, by virtue of chance with whatever gadgets we can print out using our info leak exploit. A [special helper script](./print_stacks.sh) was used, which prints out the stack via the info leak. A friendly gdb session can cross-check which values are to be used.
+
+Multiple variations of the payload can come up, but here the following were used:
+1. A `route()` address leak was used to calculate the address of `send_file()` in order to defeat PIE. 
+2. An ad-hoc address of the buffer could be obtained, hence why the filename is provided on the 4th frame.
+
+- The whole info leak:
+`libc.%23$p canary.%27$p buffer.%30$p route()ret.%31$p:hello`
 
 ```
 Flag #3:
@@ -305,7 +324,7 @@ Flag #3:
 ------------------------------
 **Target:** Remote Code Execution (RCE) on the remote server
 
-2 ways to achieve RCE, both of which require knowledge of the Glibc version which the binary is using.
+- **2 ways to achieve RCE**, both of which require knowledge of the Glibc version which the binary is using.
 
 We can identify that the Glibc version is 2.31 via sorcery and proceed with leaking a relative libc address via our Task 1 Info Leak from the stack. We can calculate the offset this libc address has from the libc base and then be able to calculate ad hoc any address we want in the libc of the binary.
 
@@ -313,9 +332,11 @@ We can identify that the Glibc version is 2.31 via sorcery and proceed with leak
 
 ### 1. Glibc's `system()` function
 
-- http://phrack.org/issues/58/4.html
+- [Phrack Advanced libc exploitation](http://phrack.org/issues/58/4.html)
 
-The most trivial way would be to build upon our Task 3 execution redirection, but instead of `ret`ing to the `send_file()` function we could redirect execution to libc's `system()` function
+The most trivial way would be to build upon our Task 3 execution redirection, but instead of `ret`ing to the `send_file()` function we could redirect execution to libc's `system()` function.
+
+_(Experimental version implemented according to "theory" but non-working during execution after the redirection to system() is successful.)_
 
 ### 2. ROPchain via glibc gadgets to execve commands without parameters
 
@@ -336,7 +357,17 @@ Specifically, we would like to imitate the following assembly sequence:
 
 To achieve the above concept we can reuse `pop-ret gadgets` present in the libc 2.31 and emulate the above behavior.
 
-++ feedback and resources
+Our ROPchain fills the `eax` register with the system call number on x86, `edx` must be NULLed out, and `ebx` contains the address of our buffer whiuch contains the command string. Because we NULL out the env parameter the full path of the command we want to run must be used (i.e `ls` won't work, but `/bin/ls` will).
+
+Additionally, `ecx` contains the arguments of our command, i.e `ls -al`, the `-al` part should be in the address pointed by `ecx`. Attempts on this was made, but in x86 the manual setting of the argument buffer is a bit tricky. On x86-64 this would be straightforward since we would just use the push-push nature of the stack to set everything proper.
+
+At last, this is an RCE but only PoC since the commands are executed very narrowly (without arguments).
+
+
+- Resources on the Return Oriented Programming technique:
+1. [ROPEmporium's Intro](https://ropemporium.com/guide.html)
+2. [ROP FTW](https://www.exploit-db.com/docs/english/28479-return-oriented-programming-(rop-ftw).pdf)
+3. [pwn.college ROP resources](https://pwn.college/cse494-s2023/return-oriented-programming)
 
 ```
 Flag #4:
@@ -346,4 +377,4 @@ Flag #4:
 00:03.0 VGA compatible controller: Amazon.com, Inc. Device 1111
 00:04.0 Non-Volatile memory controller: Amazon.com, Inc. Device 8061
 00:05.0 Ethernet controller: Amazon.com, Inc. Elastic Network Adapter (ENA)
-```
+``` 
